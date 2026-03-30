@@ -1,11 +1,11 @@
-# ava — Landing Knowledge Assistant
+# land — Landing Knowledge Assistant
 
 最小但完整的 Agent Harness，帮助新人快速理解接手的系统。分析代码仓库和文档，产出结构化的知识地图。
 
 ## Install
 
 ```bash
-git clone https://github.com/ava-agent/mini-harness.git
+git clone https://github.com/land-agent/mini-harness.git
 cd mini-harness
 pip install -e .
 ```
@@ -24,17 +24,17 @@ export GLM_API_KEY=your-api-key
 ```bash
 # 在项目目录中启动 (默认分析当前目录)
 cd /path/to/your/repo
-ava
+land
 
 # 指定项目路径
-ava /path/to/repo
+land /path/to/repo
 
 # One-shot 模式: 执行单条指令后退出
-ava -p "分析这个项目的整体架构"
-ava /path/to/repo -p "帮我生成知识地图到 output/"
+land -p "分析这个项目的整体架构"
+land /path/to/repo -p "帮我生成知识地图到 output/"
 
 # 恢复之前的会话
-ava --session 2026-03-30-143022
+land --session 2026-03-30-143022
 ```
 
 ## Architecture

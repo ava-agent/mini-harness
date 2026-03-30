@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: mini-harness
+Version: 0.1.0
+Summary: Minimal Agent Harness — Landing Knowledge Assistant
+Requires-Python: >=3.9
+Requires-Dist: openai>=1.0.0

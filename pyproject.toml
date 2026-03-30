@@ -6,7 +6,7 @@ requires-python = ">=3.9"
 dependencies = ["openai>=1.0.0"]
 
 [project.scripts]
-ava = "harness.cli:main"
+land = "harness.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["harness*"]

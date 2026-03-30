@@ -1,10 +1,10 @@
 """Mini Harness — Landing Knowledge Assistant.
 
 Usage:
-    ava                             # Analyze current directory
-    ava /path/to/repo               # Analyze specific project
-    ava -p "分析这个项目的架构"       # One-shot mode
-    ava --session 2026-03-30-143022 # Resume session
+    land                             # Analyze current directory
+    land /path/to/repo               # Analyze specific project
+    land -p "分析这个项目的架构"       # One-shot mode
+    land --session 2026-03-30-143022 # Resume session
 """
 
 from __future__ import annotations
@@ -106,8 +106,8 @@ def handle_special(cmd: str, agent: Agent) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="ava — Landing Knowledge Assistant",
-        usage="ava [path] [-p PROMPT] [--session ID]",
+        description="land — Landing Knowledge Assistant",
+        usage="land [path] [-p PROMPT] [--session ID]",
     )
     parser.add_argument("path", nargs="?", default=".", help="Project path (default: current directory)")
     parser.add_argument("-p", "--prompt", type=str, default="", help="One-shot prompt (non-interactive)")
@@ -115,7 +115,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # --- Init components ---
-    print(f"{_C.BOLD}ava v0.1 — Landing Knowledge Assistant{_C.RESET}")
+    print(f"{_C.BOLD}land v0.1 — Landing Knowledge Assistant{_C.RESET}")
     print(f"{_C.GRAY}Type /help for commands, /quit to exit{_C.RESET}\n")
 
     try:
