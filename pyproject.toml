@@ -1,6 +1,12 @@
 [project]
 name = "mini-harness"
 version = "0.1.0"
-description = "Minimal Agent Harness for Landing Knowledge Assistant"
-requires-python = ">=3.11"
+description = "Minimal Agent Harness — Landing Knowledge Assistant"
+requires-python = ">=3.9"
 dependencies = ["openai>=1.0.0"]
+
+[project.scripts]
+ava = "harness.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["harness*"]

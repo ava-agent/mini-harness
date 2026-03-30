@@ -1,20 +1,40 @@
-# Mini Harness — Landing Knowledge Assistant
+# ava — Landing Knowledge Assistant
 
 最小但完整的 Agent Harness，帮助新人快速理解接手的系统。分析代码仓库和文档，产出结构化的知识地图。
 
-## Quick Start
+## Install
 
 ```bash
+git clone https://github.com/ava-agent/mini-harness.git
 cd mini-harness
-pip install openai
+pip install -e .
+```
 
-# 设置 API Key
+## Setup
+
+```bash
 export GLM_API_KEY=your-api-key
-export GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
-export GLM_MODEL=glm-4-flash
+# Optional (defaults shown):
+# export GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+# export GLM_MODEL=glm-4-flash
+```
 
-# 运行
-python main.py --project /path/to/your/repo
+## Usage
+
+```bash
+# 在项目目录中启动 (默认分析当前目录)
+cd /path/to/your/repo
+ava
+
+# 指定项目路径
+ava /path/to/repo
+
+# One-shot 模式: 执行单条指令后退出
+ava -p "分析这个项目的整体架构"
+ava /path/to/repo -p "帮我生成知识地图到 output/"
+
+# 恢复之前的会话
+ava --session 2026-03-30-143022
 ```
 
 ## Architecture
