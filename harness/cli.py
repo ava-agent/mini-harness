@@ -85,6 +85,22 @@ def handle_special(cmd: str, agent: Agent) -> bool:
         print()
         return True
 
+    if cmd == "/trace":
+        if hasattr(agent, 'tracer') and agent.tracer:
+            print(f"\n{_C.CYAN}{agent.tracer.summary()}")
+            print(f"\n{agent.tracer.timeline()}{_C.RESET}\n")
+        else:
+            print(f"{_C.GRAY}(no trace data){_C.RESET}")
+        return True
+
+    if cmd == "/skills":
+        from harness.skills import skill_registry
+        print(f"\n{_C.BOLD}Available skills:{_C.RESET}")
+        for s in skill_registry.list_all():
+            print(f"  {_C.CYAN}/{s.name}{_C.RESET}  — {s.description}")
+        print()
+        return True
+
     if cmd == "/help":
         print(f"""
 {_C.BOLD}Special commands:{_C.RESET}
@@ -92,8 +108,17 @@ def handle_special(cmd: str, agent: Agent) -> bool:
   {_C.CYAN}/output{_C.RESET}     — Show output directory tree
   {_C.CYAN}/session{_C.RESET}    — Show current session info
   {_C.CYAN}/sessions{_C.RESET}   — List all saved sessions
+  {_C.CYAN}/trace{_C.RESET}      — Show execution trace + stats
+  {_C.CYAN}/skills{_C.RESET}     — List available skills
   {_C.CYAN}/help{_C.RESET}       — Show this help
   {_C.CYAN}/quit{_C.RESET}       — Save memory and exit
+
+{_C.BOLD}Skills (predefined workflows):{_C.RESET}
+  {_C.CYAN}/analyze{_C.RESET}    — Full project analysis
+  {_C.CYAN}/map{_C.RESET}        — Generate knowledge map
+  {_C.CYAN}/explore{_C.RESET} <path> — Deep-dive a module
+  {_C.CYAN}/people{_C.RESET}     — Identify contributors
+  {_C.CYAN}/risks{_C.RESET}      — Identify tech debt
 """)
         return True
 
@@ -170,6 +195,22 @@ def main() -> None:
         if user_input.startswith("/"):
             if handle_special(user_input, agent):
                 continue
+
+            # Check if it's a skill command
+            from harness.skills import skill_registry
+            parts = user_input.split(None, 1)
+            skill_name = parts[0][1:]  # remove leading /
+            skill_args = parts[1] if len(parts) > 1 else ""
+            rendered = skill_registry.render(skill_name, skill_args, project_path)
+            if rendered:
+                print(f"  {_C.GREEN}▶ Running skill: /{skill_name}{_C.RESET}\n")
+                try:
+                    response = agent.run(rendered)
+                    print(f"\n{response}\n")
+                except Exception as e:
+                    print(f"\n{_C.RED}Error: {e}{_C.RESET}\n")
+                continue
+
             print(f"{_C.YELLOW}Unknown command: {user_input}. Type /help{_C.RESET}\n")
             continue
 

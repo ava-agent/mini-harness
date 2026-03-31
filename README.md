@@ -1,6 +1,6 @@
 # land — Landing Knowledge Assistant
 
-> 最小但完整的 Agent Harness (902 行 Python)，帮助新人快速理解接手的系统。
+> 从 902 行到 2100+ 行，13 个模块覆盖 Agent Harness 核心子系统。边做边学。
 
 ```bash
 cd /path/to/new-repo && land
@@ -601,6 +601,157 @@ Bonus:     Docker/Worktree 沙箱     ❌ (P2 扩展)
 
 ---
 
+## Part 2.7: 高阶能力 — SubAgent、Skill、Trace
+
+v0.1 是骨架 (6 模块)，v0.2 是护栏 (4 模块)，v0.3 是**高阶能力**——这是 Claude Code 真正强大的地方。
+
+### Module 11: subagent.py — 子 Agent (154 行)
+
+![SubAgent — 主 Agent 委派子任务给 SubAgent](docs/images/15-subagent.png)
+
+**问题**：大任务不应该在一个长对话里完成——上下文会爆、风险会累积。"分析这个项目"应该拆成几个独立子任务。
+
+**Claude Code 的做法**：`Agent` 工具可以启动一个新的 Agent，拥有独立上下文窗口，完成后把结果返回给父 Agent。SubAgent 可以再启动 SubAgent（递归嵌套）。
+
+**land 的实现**：
+
+```python
+manager = SubAgentManager(llm, tools, safety)
+
+# 委派子任务
+results = manager.spawn_many([
+    {"name": "structure", "task": "分析目录结构和技术栈"},
+    {"name": "git",       "task": "分析 git 历史和贡献者"},
+    {"name": "docs",      "task": "读取所有文档文件并摘要"},
+], context=f"项目路径: {project_path}")
+
+# 每个 SubAgent 有自己的:
+# - 独立上下文 (不污染父 Agent)
+# - 聚焦的 System Prompt (只做一件事)
+# - 独立的迭代次数上限 (默认 8 轮)
+```
+
+**SubAgent 的 3 个关键设计**:
+
+| 特性 | 为什么 |
+|------|--------|
+| **独立上下文** | SubAgent 读的文件、工具输出不进入父 Agent 的历史，避免污染 |
+| **聚焦 Prompt** | "你只需完成一个任务" — 比父 Agent 的通用 Prompt 更高效 |
+| **结果摘要** | SubAgent 返回文本结果（不是原始工具输出），父 Agent 只看摘要 |
+
+**对比 Claude Code**：Claude Code 的 SubAgent 还支持并行执行（多线程）、Git Worktree 隔离（每个 SubAgent 在独立代码副本上工作）。land 当前是顺序执行，但架构上预留了并行扩展。
+
+---
+
+### Module 12: skills.py — Skill 系统 /命令 (148 行)
+
+![Skill System — /命令触发预定义工作流](docs/images/16-skill-system.png)
+
+**问题**：每次都手动描述"帮我分析项目结构、看 git 历史、读 README..."太繁琐。常用工作流应该一键触发。
+
+**Claude Code 的做法**：`/commit`、`/review-pr` 等 Skill——不是简单的快捷命令，而是注入到 Agent 上下文的**结构化 Prompt 模板**，引导 Agent 按步骤完成。
+
+**land 的 5 个内置 Skill**：
+
+```bash
+> /analyze              # 全面分析: 结构→技术栈→入口→git→核心模块
+> /map                  # 生成知识地图到 output/ (INDEX.md + 模块文档)
+> /explore src/order    # 深度探索 order 模块
+> /people               # 识别贡献者和 owner
+> /risks                # 识别技术债和风险
+```
+
+**Skill 的核心设计——它是 Prompt，不是代码**：
+
+```python
+Skill(
+    name="analyze",
+    prompt_template="""
+    请对项目 {project} 进行全面分析，按以下步骤：
+    1. list_dir 查看骨架
+    2. 读取 package.json/pom.xml 识别技术栈
+    3. 读取 README.md
+    4. git log --oneline -20
+    5. git shortlog -sn --all
+    6. 识别核心模块并 memorize
+    ...
+    """,
+)
+```
+
+**为什么是 Prompt 而不是硬编码步骤？** 因为 LLM 可以根据实际情况灵活调整——如果项目没有 package.json，它会跳过；如果发现了意外的结构，它会探索。Skill 给的是**导航路线**，不是死板脚本。
+
+**学习要点**：Claude Code 的 Skill 系统更复杂——支持 Skill 文件（Markdown 文件作为 Skill）、参数化（`/review-pr 123`）、渐进加载（不预加载所有 Skill）。land 的实现是最简形态，但核心思想一致。
+
+---
+
+### Module 13: trace.py — 执行追踪 (168 行)
+
+![Trace — Agent 执行的完整可观测性](docs/images/17-trace.png)
+
+**问题**：Agent 做了什么？为什么做了这个决定？花了多少 token？哪个工具调用最慢？——没有可观测性，你无法调试和优化 Agent。
+
+**Claude Code 的做法**：记录所有操作到事件日志。DeerFlow 用 OpenTelemetry 做分布式追踪。
+
+**land 的 `/trace` 命令**：
+
+```bash
+> /trace
+
+Session: 20260331-150000
+Events: 23
+LLM calls: 5
+Tool calls: 14
+Blocked: 2
+Est. tokens: 15,200
+Tool time: 1,847ms
+
+  15:00:01 💬 User: 帮我分析这个项目
+  15:00:02 🧠 LLM (glm-4-flash) msgs=3 tokens≈2400
+  15:00:03 ⚙️ list_dir → 1200 chars (23ms)
+  15:00:04 ⚙️ read_file → 3400 chars (12ms)
+  15:00:05 🧠 LLM (glm-4-flash) msgs=7 tokens≈4800
+  15:00:06 ⚙️ run_command → 800 chars (156ms)
+  15:00:07 🚫 BLOCKED run_command: sudo apt install...
+  15:00:08 🧠 LLM (glm-4-flash) msgs=10 tokens≈6200
+  15:00:10 💡 Agent: 这个项目是一个订单履约系统...
+```
+
+**追踪记录的 7 种事件**：
+
+| 事件 | 图标 | 记录什么 |
+|------|------|---------|
+| `user_input` | 💬 | 用户输入（截断到 200 字符） |
+| `llm_call` | 🧠 | 模型名、消息数、估算 token |
+| `tool_call` | ⚙️ | 工具名、参数、结果长度、耗时 |
+| `tool_blocked` | 🚫 | 被拦截的工具和原因 |
+| `agent_response` | 💡 | Agent 最终响应 |
+| `compact` | 📦 | 压缩前后的消息数 |
+| `error` | ❌ | 错误信息 |
+
+**Trace 自动保存到 `.land/traces/{session}.json`**，可以事后分析。
+
+**学习要点**：可观测性是 Harness 的"第七感"——没有它你在盲飞。Claude Code 的日志让你能回答"为什么 Agent 选择了这个工具而不是那个"。DeerFlow 用 OpenTelemetry 做跨 SubAgent 的分布式追踪。land 的 JSON 事件日志是最简实现。
+
+---
+
+### v0.3 全景: 13 个模块
+
+```
+v0.1 骨架层 (6 模块, 672 行):       v0.2 护栏层 (4 模块, 496 行):
+├── llm.py        — LLM 客户端      ├── compact.py     — 上下文压缩
+├── tools.py      — 6 个工具         ├── hooks.py       — 生命周期钩子
+├── safety.py     — 命令黑名单       ├── permissions.py — Allow/Ask/Deny
+├── memory.py     — 记忆系统         └── config.py      — LAND.md 配置
+├── prompt.py     — 上下文组装
+└── agent.py      — Agent Loop       v0.3 能力层 (3 模块, 470 行):
+                                     ├── subagent.py    — 子 Agent
+cli.py            — 终端交互          ├── skills.py      — /命令工作流
+                                     └── trace.py       — 执行追踪
+```
+
+---
+
 ## Part 3: 和 Claude Code / DeerFlow 对比学习
 
 ![Learning Path — 从 land 到 DeerFlow 到 Claude Code](docs/images/09-learning-path.png)
@@ -608,26 +759,30 @@ Bonus:     Docker/Worktree 沙箱     ❌ (P2 扩展)
 ### 全景对比
 
 ```
-                        land v0.2       Claude Code         DeerFlow 2.0
+                        land v0.3       Claude Code         DeerFlow 2.0
                         ─────────       ───────────         ────────────
-代码量                   1469 行         ~50K+ 行            ~30K+ 行
-定位                    学习用 Harness   终端 Agent Harness   SuperAgent Harness
+代码量                   2100+ 行        ~50K+ 行            ~30K+ 行
+模块数                   13              ~30+                ~20+
 ─────────────────────────────────────────────────────────────────────────
 Agent Loop              ✅ 可配置轮数    ✅ 复杂嵌套          ✅ LangGraph 状态机
 工具系统                 6 个            ~20 个              ~15 个 (5 来源)
-上下文工程               ✅ 分段组装      ✅ System Reminder   ✅ 14 阶段中间件
+上下文工程               ✅ 7 段组装      ✅ System Reminder   ✅ 14 阶段中间件
 记忆                    ✅ JSON 文件     ✅ MEMORY.md         ✅ 置信度事实系统
-安全                    ✅ 5 层 ★NEW    ✅ 5 层纵深          ✅ Guardrail 中间件
-上下文压缩              ✅ 2 阶段 ★NEW  ✅ Compact           ✅ Summarization
-Hooks                   ✅ 5 事件 ★NEW  ✅ 生命周期          ✅ 中间件管道
-权限系统                ✅ A/A/D ★NEW   ✅ Allow/Ask/Deny    ✅ Guardrail
-项目配置                ✅ LAND.md ★NEW ✅ CLAUDE.md         ✅ 配置文件
+安全                    ✅ 5 层          ✅ 5 层纵深          ✅ Guardrail 中间件
+上下文压缩              ✅ 2 阶段        ✅ Compact           ✅ Summarization
+Hooks                   ✅ 5 事件        ✅ 生命周期          ✅ 中间件管道
+权限系统                ✅ A/A/D         ✅ Allow/Ask/Deny    ✅ Guardrail
+项目配置                ✅ LAND.md       ✅ CLAUDE.md         ✅ 配置文件
+SubAgent                ✅ 顺序 ★v0.3   ✅ 并行 + Worktree   ✅ 双线程池
+Skill 系统              ✅ 5 个 ★v0.3   ✅ /commit 等        ✅ 渐进加载
+执行追踪                ✅ JSON ★v0.3   ✅ 事件日志          ✅ OpenTelemetry
 ─────────────────────────────────────────────────────────────────────────
 沙箱                    ❌              ✅ 进程隔离           ✅ Docker
-Sub-Agent               ❌              ✅ Agent Teams       ✅ 双线程池
 MCP                     ❌              ✅ 原生              ✅ OAuth
 Streaming               ❌              ✅                   ✅
-Skill/Plugin            ❌              ✅ /commit等         ✅ 渐进加载
+
+land 覆盖了 Claude Code 80% 的架构概念，
+剩余 20% (沙箱/MCP/Streaming) 是部署级关注点。
 ```
 
 ### 每个模块的进化方向
@@ -767,20 +922,27 @@ for pattern in CONFIRM_PATTERNS:
 6 (心脏)     agent.py         215    Agent Loop、5 层安全集成
 7 (入口)     cli.py           187    REPL、特殊命令
 
-第二轮: 进阶 4 模块 (v0.2 参考 Claude Code)
+第二轮: 进阶 4 模块 (v0.2 护栏层)
 ─────────────────────────────────────────────────────
 8 (压缩)     compact.py       119    上下文窗口管理、渐进压缩
 9 (钩子)     hooks.py         129    生命周期事件、拦截器模式
 10 (权限)    permissions.py   140    Allow/Ask/Deny、模式匹配
 11 (配置)    config.py        108    LAND.md、双层配置
 
-合计: 1469 行, 10 个模块
+第三轮: 高阶 3 模块 (v0.3 能力层)
+─────────────────────────────────────────────────────
+12 (子Agent) subagent.py      154    SubAgent、独立上下文、任务分解
+13 (技能)    skills.py        148    /命令、Prompt 模板、预定义工作流
+14 (追踪)    trace.py         168    事件日志、可观测性、性能分析
 
-代码量分布揭示 Harness 的本质:
-  工具层最多 (217行) — Agent 的价值在于使用工具
-  Agent Loop (215行) — 集成了所有安全层后，逻辑更完整
-  LLM 层最少 (41行)  — 调用 LLM 本身不产生价值
-  新增 4 模块 (496行) — 安全+配置 占比 34%，说明 Harness 的大量代码是"护栏"
+合计: ~2100 行, 13 个模块
+
+三层架构的代码分布:
+  v0.1 骨架 (672行, 47%) — Agent 运转的最小集
+  v0.2 护栏 (496行, 34%) — 安全+配置，大量代码是"约束"
+  v0.3 能力 (470行, 19%) — SubAgent+Skill+Trace，高阶能力
+
+启示: Harness 的代码有 1/3 是护栏 — 不是让 Agent 做更多，而是让 Agent 更安全
 ```
 
 **阅读每个文件时，问自己三个问题**：
