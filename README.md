@@ -1,6 +1,6 @@
 # land — Landing Knowledge Assistant
 
-最小但完整的 Agent Harness (902 行 Python)，帮助新人快速理解接手的系统。
+> 最小但完整的 Agent Harness (902 行 Python)，帮助新人快速理解接手的系统。
 
 ```bash
 cd /path/to/new-repo && land
@@ -15,22 +15,13 @@ git clone https://github.com/ava-agent/mini-harness.git
 cd mini-harness
 pip install -e .
 
-export GLM_API_KEY=your-api-key    # Required
-# export GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4  # Default
-# export GLM_MODEL=glm-4-flash    # Default
+export GLM_API_KEY=your-api-key
 
-# 交互模式
 cd /path/to/your/repo
-land
-
-# One-shot 模式
-land -p "分析这个项目的架构，生成知识地图"
-
-# 恢复会话
-land --session 2026-03-31-143022
+land                              # 交互模式
+land -p "分析这个项目的架构"        # One-shot 模式
+land --session 2026-03-31-143022  # 恢复会话
 ```
-
-### Commands
 
 | 命令 | 说明 |
 |------|------|
@@ -43,427 +34,208 @@ land --session 2026-03-31-143022
 
 ---
 
-## Design: 为什么这么设计
+## Part 1: 什么是 Agent Harness
 
-### 设计哲学
-
-**land 遵循三个核心原则**：
-
-1. **Harness Engineering** (Ryan Lopopolo, OpenAI)
-   - "给 AI 一张地图，而不是一本说明书"
-   - 产出的知识地图用 ~100 行 INDEX.md 作为入口，指向更深的文档
-   - Agent 本身的 System Prompt 也是分段组装的地图，不是一段大文本
-
-2. **Context Engineering** (Anthropic, LangChain)
-   - 不是"提示词工程"——不是优化一句话的措辞
-   - 而是"上下文工程"——设计 Agent 的整个信息架构
-   - System Prompt 每次 LLM 调用时动态组装：角色 + 工具 + 记忆 + 约束
-
-3. **最小但完整**
-   - 6 个模块，每个对应 Harness 的一个核心子系统
-   - 唯一外部依赖：`openai` SDK
-   - 没有框架（不用 LangChain/CrewAI），每一行代码都有意义
-
-### 和 Claude Code / DeerFlow 的对比
-
-![Comparison](docs/images/05-comparison.png)
+### 一个类比
 
 ```
-                        land        Claude Code     DeerFlow 2.0
-                        ────        ───────────     ────────────
-代码量                   902 行      ~50K+ 行        ~30K+ 行
-Agent Loop              ✅ 15 轮     ✅ 复杂嵌套      ✅ LangGraph 状态机
-工具系统                 6 个         ~20 个          ~15 个 (5 来源)
-上下文工程               ✅ 分段组装  ✅ System Reminder ✅ 14 阶段中间件
-记忆                    ✅ JSON 文件  ✅ MEMORY.md     ✅ 置信度事实系统
-安全                    ✅ 黑名单+循环 ✅ 5 层纵深     ✅ Guardrail 中间件
-沙箱                    ❌           ✅ 进程隔离      ✅ Docker
-Sub-Agent               ❌           ✅              ✅ 双线程池
-MCP                     ❌           ✅ 原生          ✅ OAuth
-Skill/Plugin            ❌           ✅              ✅ 渐进加载
-
-land 是学习 Harness 的起点：
-  看到了骨架 → 才知道 Claude Code 的肌肉长在哪里
+LLM = CPU        (提供原始智能，但单独不能做任何事)
+Harness = OS     (提供文件系统、进程管理、安全层、I/O)
+Agent = App      (在 OS 上运行的应用程序)
 ```
+
+**没有 Harness 的 LLM** 就像没有操作系统的 CPU——能计算，但不能持续工作、不能记忆、不能安全地与外部交互。
+
+### Harness 的组成
+
+![Architecture — 六模块围绕 Agent Loop](docs/images/01-architecture.png)
+
+一个完整的 Agent Harness 包含 6 个子系统：
+
+| 子系统 | land 里的文件 | 解决什么问题 |
+|--------|-------------|-------------|
+| **Agent Loop** | `agent.py` | Agent 怎么持续地思考和行动 |
+| **Tool Integration** | `tools.py` | Agent 怎么使用外部工具 |
+| **Context Engineering** | `prompt.py` | Agent 怎么理解自己的角色和边界 |
+| **Memory** | `memory.py` | Agent 怎么记住之前的发现 |
+| **Safety** | `safety.py` | Agent 怎么避免做危险的事 |
+| **LLM Client** | `llm.py` | Agent 怎么和大模型通信 |
+
+**land 用 902 行代码实现了所有 6 个。** 每个文件就是一个子系统，阅读顺序 = 学习顺序。
 
 ---
 
-## Architecture: 六个模块
+## Part 2: 从零理解 — 你输入 `land` 后发生了什么
 
-![Architecture](docs/images/01-architecture.png)
+### Step 1: 启动
 
-Agent Loop 围绕 6 个模块运转——LLM、Tools、Memory、Safety、Prompt、Terminal UI。
-
-```
-┌──────────────────────────────────────────────────────┐
-│                    cli.py / main.py                   │
-│                   终端交互 + REPL                     │
-└──────────────────────┬───────────────────────────────┘
-                       │ 用户输入
-                       ▼
-┌──────────────────────────────────────────────────────┐
-│                     agent.py                          │
-│              Agent Loop (核心循环)                     │
-│                                                      │
-│   ┌─────────┐    ┌──────────┐    ┌───────────┐      │
-│   │ 1. Think │───→│ 2. Act   │───→│ 3. Observe│──┐   │
-│   │ 调用 LLM │    │ 执行工具  │    │ 收集结果   │  │   │
-│   └─────────┘    └──────────┘    └───────────┘  │   │
-│        ▲                                        │   │
-│        └────────────────────────────────────────┘   │
-│                    (循环直到完成)                      │
-└──┬──────────┬──────────┬──────────┬─────────────────┘
-   │          │          │          │
-   ▼          ▼          ▼          ▼
-┌──────┐ ┌────────┐ ┌────────┐ ┌─────────┐
-│llm.py│ │tools.py│ │memory  │ │safety.py│
-│      │ │        │ │  .py   │ │         │
-│ GLM  │ │ 6 工具  │ │ JSON   │ │ 黑名单   │
-│ API  │ │ @tool  │ │ 持久化  │ │ 循环检测  │
-└──────┘ └────────┘ └────────┘ └─────────┘
-              │
-              ▼
-         ┌─────────┐
-         │prompt.py│
-         │         │
-         │ 动态组装  │
-         │ System   │
-         │ Prompt   │
-         └─────────┘
+```bash
+$ land /path/to/repo
+land v0.1 — Landing Knowledge Assistant
+Project: /path/to/repo
+Session: 2026-03-31-150000
+>
 ```
 
-### 数据流（一次完整的交互）
+启动时做了什么：
+1. 初始化 `LLMClient`（连接 GLM API）
+2. 加载 `ToolRegistry`（注册 6 个内置工具）
+3. 创建 `MemoryStore`（新 session 或恢复旧 session）
+4. 创建 `SafetyGuard`（加载黑名单规则）
+5. 组装 `Agent`（把上面 4 个组件连起来）
 
-![Data Flow](docs/images/04-data-flow.png)
-
-用户输入 → Prompt 组装 → LLM 思考 → Tool Calls? → 安全检查 → 执行 → 结果回传 → 循环。
+### Step 2: 你输入一个问题
 
 ```
-1. 用户输入: "帮我分析这个项目的架构"
-
-2. prompt.py 组装 System Prompt:
-   ┌─ 角色: "你是 Landing 知识助手..."
-   ├─ 工具说明: "你可以调用 git, gh, glab..."
-   ├─ 输出模板: "INDEX.md 是地图不是说明书..."
-   ├─ 记忆回忆: "- order-service 是核心模块 (source: git log)"
-   └─ 约束: "以读为主，不修改源码..."
-
-3. agent.py 发送给 LLM:
-   messages = [system_prompt, ...history, user_message]
-
-4. LLM 返回 tool_calls:
-   [{"name": "list_dir", "arguments": {"path": ".", "depth": 2}}]
-
-5. safety.py 检查:
-   ✅ list_dir 不在黑名单
-   ✅ 不是重复调用
-
-6. tools.py 执行:
-   list_dir(".", depth=2) → "src/\n  order/\n  inventory/\n..."
-
-7. 结果回传 LLM，LLM 继续思考...
-   (可能再调用 read_file, search_code, run_command 等)
-
-8. LLM 最终返回文本响应:
-   "这个项目是一个订单履约系统，核心模块包括..."
-
-9. memory.py 如果 Agent 调了 memorize:
-   保存: {"fact": "order-service 是核心", "source": "list_dir"}
+> 帮我了解这个项目的整体结构
 ```
 
----
+### Step 3: Prompt 组装 (prompt.py)
 
-## Module Deep Dive: 逐模块解析
+![Context Engineering — 从 Prompt Engineering 到 Context Engineering](docs/images/10-context-vs-prompt.png)
 
-### 1. llm.py — LLM 客户端 (41 行)
+**这是 Harness 最关键的理念转变：**
 
-**它是 Harness 最薄的一层。** 只做一件事：把 messages + tools 发给模型，拿回响应。
+```
+旧思路 (Prompt Engineering):
+  写一段固定的提示词 → 发给 LLM → 希望它表现好
 
-```python
-class LLMClient:
-    def chat(self, messages, tools=None):
-        response = self.client.chat.completions.create(
-            model=self.model, messages=messages, tools=tools, tool_choice="auto"
-        )
-        return response.choices[0].message
+新思路 (Context Engineering):
+  每次调用动态组装上下文 → 注入当前记忆 → 注入当前项目 → 发给 LLM
 ```
 
-**设计决策**：
-- 用 `openai` SDK + 自定义 `base_url`，所有 OpenAI 兼容模型（GLM、DeepSeek、通义千问）零改动切换
-- 不做 streaming（最小版本不需要）
-- 不做重试（交给上层 Agent Loop 处理）
+![Context Engineering — 6 层动态组装](docs/images/03-context-engineering.png)
 
-**学习要点**：Harness 的价值不在 LLM 调用，而在**围绕 LLM 的基础设施**。这个文件最小，是对的。
-
----
-
-### 2. tools.py — 工具注册表 (217 行)
-
-**两个核心机制**：
-
-#### `@tool` 装饰器 + 自动 Schema 生成
-
-```python
-@tool(description="读取文件内容，返回带行号的文本")
-def read_file(path: str, limit: int = 200) -> str:
-    """path: 文件的绝对或相对路径
-    limit: 最多读取的行数，默认 200"""
-```
-
-一个装饰器做了三件事：
-1. 从 Python 类型注解自动生成 OpenAI function-calling JSON Schema
-2. 从 docstring 提取每个参数的描述
-3. 注册到全局 `registry`
-
-这意味着**添加新工具只需写一个函数**，零配置。
-
-#### ToolRegistry
-
-```python
-class ToolRegistry:
-    def get_schemas(self) -> list[dict]   # 给 LLM 看的 JSON Schema
-    def execute(name, args) -> str         # 执行并返回字符串结果
-```
-
-**设计决策**：
-- 工具返回值统一为 `str`——LLM 只能读文本，不需要结构化返回
-- `run_command` 是最关键的工具：通过它调用 git/gh/glab/feishu-cli，避免为每个 CLI 写专用工具
-- `memorize` 是一个"虚拟工具"：tools.py 里的实现是 placeholder，真正的持久化在 agent.py 里拦截处理
-
-**学习要点**：对比 Claude Code 的 ~20 个工具（Read, Edit, Glob, Grep, Bash...），land 用 6 个覆盖了核心场景。`run_command` 承担了 Claude Code 里 Bash 工具的角色。
-
----
-
-### 3. safety.py — 安全层 (62 行)
-
-**两个防线**：
-
-#### 命令黑名单
-
-```python
-BLOCKED_PATTERNS = [
-    re.compile(r"\brm\s+-rf\b"),
-    re.compile(r"\bsudo\b"),
-    re.compile(r"\bgit\s+push\s+--force\b"),
-    re.compile(r"\bgit\s+reset\s+--hard\b"),
-    # ...13 个模式
-]
-```
-
-Agent 调用 `run_command` 时，先过黑名单。匹配到就拒绝，原因回传给 LLM。
-
-#### 循环检测 (Doom Loop Detection)
-
-```python
-def check_loop(self, tool_name, args):
-    key = f"{tool_name}|{json.dumps(args, sort_keys=True)}"
-    self._call_counter[key] += 1
-    if count >= 3:  # 同样的调用超过 3 次
-        return False, "Loop detected, try a different approach"
-```
-
-**设计决策**：
-- 用工具名 + 参数的精确匹配检测循环（DeerFlow 用的是更复杂的 sliding window 算法）
-- 每次用户新输入时 `reset_loop()`——新问题重新计数
-- 阈值 3 是经验值：1 次正常，2 次可能是 retry，3 次就是 loop
-
-**学习要点**：Claude Code 有 5 层安全纵深（AST 分析、Allow/Deny、Runtime Approval、Docker、Audit）。land 的 2 层（黑名单 + 循环检测）是最小但最关键的子集。
-
-**对比 DeerFlow 的 14 阶段中间件**：
-```
-DeerFlow 有而 land 没有的:
-├── Summarization        ← 上下文超窗时自动压缩
-├── DanglingToolCall     ← LLM 生成了格式错误的 tool_call
-├── MaxSteps             ← 更精细的步数限制
-├── ContextOverflow      ← Token 预算动态管理
-└── Guardrail            ← 基于 LLM 的内容审查
-
-这些是你后续扩展的方向。
-```
-
----
-
-### 4. memory.py — 记忆系统 (95 行)
-
-**核心方法**：
-
-```python
-class MemoryStore:
-    def add(fact, source)        # Agent 发现了什么 → 存入
-    def recall(token_budget=2000) # 取出记忆，控制在 token 预算内
-    def save() / load()          # JSON 文件持久化
-```
-
-**`recall()` 的 token 预算机制**：
-
-```python
-def recall(self, token_budget=2000):
-    char_budget = token_budget * 4  # ~4 chars/token
-    for entry in reversed(self._facts):  # 最近的优先
-        line = f"- {entry['fact']}"
-        if used + len(line) > char_budget:
-            break  # 超预算就停
-        lines.append(line)
-```
-
-**为什么不是全部返回？** 因为 System Prompt 有 token 上限。记忆越多，留给当前对话的空间越少。这就是"上下文经济学"——每个 token 都是稀缺资源。
-
-**设计决策**：
-- 最近优先（`reversed`）：人的直觉也是最近发现的最相关
-- 估算 ~4 chars/token：粗略但够用
-- 每次 `add()` 自动 `save()`：不怕崩溃丢数据
-
-**对比其他 Harness 的记忆系统**：
-```
-land:          JSON 列表 + token 预算
-Claude Code:   MEMORY.md (文件系统) + frontmatter 类型
-DeerFlow:      LLM 提取事实 + 置信度评分 + Token 预算注入
-Dapr Agents:   Dapr State Store (28+ 可插拔后端)
-
-land 的记忆够用但原始。下一步可以加:
-├── LLM 自动提取事实（不靠 Agent 主动调 memorize）
-├── 置信度评分（不确定的事实权重低）
-└── 向量检索（不只是全量召回）
-```
-
----
-
-### 5. prompt.py — System Prompt 动态组装 (135 行)
-
-![Context Engineering](docs/images/03-context-engineering.png)
-
-**这是 Harness 区别于"给 LLM 发消息"的关键。** 6 个段像积木一样堆叠，每次调用动态组装。
+`prompt.py` 像搭积木一样组装 System Prompt：
 
 ```python
 def build_system_prompt(memory_recall="", project_path=""):
     sections = [
-        ROLE_SECTION,              # 1. 你是谁
-        CLI_TOOLS_SECTION,         # 2. 你能用什么
-        OUTPUT_STRUCTURE_SECTION,  # 3. 产出规范
-        memory_recall,             # 4. 你记得什么 (动态)
-        project_context,           # 5. 当前项目 (动态)
-        CONSTRAINTS_SECTION,       # 6. 你不能做什么
+        ROLE_SECTION,              # 1. "你是 Landing 知识助手"
+        CLI_TOOLS_SECTION,         # 2. "你可以用 git, gh, glab..."
+        OUTPUT_STRUCTURE_SECTION,  # 3. "INDEX.md 的模板是..."
+        memory_recall,             # 4. "你已经知道: ..." (动态!)
+        project_context,           # 5. "当前项目: /path/..." (动态!)
+        CONSTRAINTS_SECTION,       # 6. "不要修改源码，不要..."
     ]
-    return "\n\n".join(sections)
 ```
 
-**每次 LLM 调用都重新组装**。因为记忆在变、项目上下文在变。
+**为什么每次都重新组装？** 因为第 4 段（记忆）在变——Agent 每发现一个事实，下一轮的 System Prompt 就多一条记忆。
 
-**6 个段的设计逻辑**：
+**对比 Claude Code**：Claude Code 的 System Prompt 更复杂，有 System Reminder（对抗 LLM 的"指令遗忘"）和 Prompt Cache（利用前缀缓存降低延迟）。但核心思想一样：**分段组装，按需注入**。
 
-| 段 | 内容 | 为什么需要 |
-|----|------|-----------|
-| Role | "你是 Landing 知识助手" | 限定角色边界 |
-| CLI Tools | git/gh/glab/feishu-cli 用法 | Agent 不知道有什么 CLI 可用 |
-| Output Structure | INDEX.md 模板 + 目录规范 | 不给模板 Agent 会随意输出 |
-| Memory | 动态注入已知事实 | 跨轮次保持连贯 |
-| Project | 工作目录路径 | Agent 需要知道在哪 |
-| Constraints | "以读为主，不修改源码" | 防止 Agent 越界 |
+### Step 4: Agent Loop (agent.py)
 
-**学习要点**：Claude Code 的 system prompt 更复杂——包含 System Reminder（对抗指令衰减）、Prompt Cache（利用前缀缓存降低延迟）、动态工具 Schema 注入。但核心思想一样：**分段组装，按需注入**。
+![Agent Loop — Think → Act → Observe](docs/images/02-agent-loop.png)
 
----
+System Prompt 组装好后，进入核心循环：
 
-### 6. agent.py — Agent Loop (171 行)
-
-![Agent Loop](docs/images/02-agent-loop.png)
-
-**这是 Harness 的心脏。** Think → Act → Observe 三阶段循环：
-
-```
-for iteration in range(15):        # 最多 15 轮
-    response = llm.chat(messages)  # Think: 让 LLM 思考
+```python
+for iteration in range(15):           # 最多 15 轮
+    response = llm.chat(messages)      # Think: LLM 思考
 
     if no tool_calls:
-        return response.content    # Done: 纯文本回复
+        return response.content        # Done: 返回文本
 
-    for tc in tool_calls:          # Act: 执行工具
-        safety_check(tc)           # 安全检查
-        result = tools.execute(tc) # 执行
-        messages.append(result)    # Observe: 结果回传
+    for tc in tool_calls:              # Act: 执行工具
+        safety_check(tc)               #   安全检查
+        result = tools.execute(tc)     #   执行
+        messages.append(result)        #   Observe: 结果回传
 
-    continue                       # 循环
+    continue                           # 回到 Think
 ```
 
-**关键细节**：
+**这就是 Harness 的心脏。** 三个阶段不断循环：
 
-1. **`memorize` 拦截**：Agent 调用 memorize 时，agent.py 拦截并写入 MemoryStore，而不是执行 tools.py 里的 placeholder
+| 阶段 | 做什么 | 对应代码 |
+|------|--------|---------|
+| **Think** | 把所有信息发给 LLM，让它决定下一步 | `llm.chat(messages)` |
+| **Act** | LLM 返回 tool_calls，执行对应工具 | `tools.execute(name, args)` |
+| **Observe** | 工具结果作为新消息回传给 LLM | `messages.append(tool_result)` |
 
-2. **消息格式**：tool_call 结果必须以 `{"role": "tool", "tool_call_id": tc.id}` 格式回传——这是 OpenAI function-calling 协议要求的
-
-3. **MAX_ITERATIONS = 15**：防止无限循环的硬性上限。Claude Code 的 Agent Loop 更复杂，有 SubAgent 嵌套和动态调整
-
-4. **System Prompt 每轮重建**：`[self._system_message()] + self.history`——因为记忆可能在本轮更新了
-
-**对比 Claude Code 的 Agent Loop**：
-```
-Claude Code 有而 land 没有的:
-├── SubAgent (子任务分派)
-├── Streaming (流式输出)
-├── Parallel Tool Calls (并行执行多个工具)
-├── Context Window Management (超窗时自动压缩)
-├── Retry with Backoff (LLM 调用失败重试)
-└── Hooks (PreToolUse / PostToolUse 钩子)
-
-这些都是在 land 的骨架上可以逐步添加的。
-```
-
----
-
-## Output Structure: 知识地图
-
-land 产出的不是散乱笔记，而是**结构化的知识架构**，遵循 Harness Engineering 渐进式披露原则：
+**一个真实例子**：
 
 ```
-output/{project-name}/
-├── INDEX.md                ← 入口地图 (~100 行，只放指针)
-├── architecture.md         ← 分层架构 + 模块关系图
-├── modules/                ← 每个核心模块一个文件
-│   └── {module-name}.md   ← 职责、入口文件、依赖、关键逻辑
-├── people.md               ← 关键人物/团队 + 负责领域
-├── risks.md                ← 技术债、已知问题
-├── glossary.md             ← 业务术语表
-├── onboarding-checklist.md ← 自动生成的 Landing 待办
-└── explorer.html           ← 交互式知识浏览器 (可选)
+Think #1: LLM 收到 "帮我了解项目结构"
+  → LLM 决定: 先调用 list_dir
+
+Act #1: 执行 list_dir(".", depth=2)
+  → 返回: "src/\n  order/\n  inventory/\n  config/\nREADME.md\n..."
+
+Observe #1: 结果回传给 LLM
+
+Think #2: LLM 看到目录结构，决定读 README
+  → LLM 决定: 调用 read_file("README.md")
+
+Act #2: 执行 read_file("README.md")
+  → 返回: "# Order System\nA fulfillment platform..."
+
+Observe #2: 结果回传给 LLM
+
+Think #3: LLM 现在有了足够信息
+  → LLM 返回文本: "这是一个订单履约系统，核心模块包括..."
+
+Done! 返回给用户。
 ```
 
-### INDEX.md 设计原则 (来自 Ryan Lopopolo, OpenAI)
+**3 轮循环，Agent 就完成了"看目录 → 读关键文件 → 总结回答"的过程。** 就像一个有经验的工程师第一次看一个新项目的操作：先看骨架，再看入口，然后形成理解。
 
-> "给 AI 一张地图，不是一本说明书。~100 行入口 + 指针 + 渐进发现。"
+### Step 5: 工具执行 (tools.py)
 
-- 不超过 100 行
-- 每条信息都是**指针**（链接到更深的文档），不内联详情
-- 先总览 → 再模块 → 再细节（渐进式）
+![Tool Registry — @tool 装饰器到 LLM 调用的完整流程](docs/images/06-tool-registry.png)
 
----
+**Agent 怎么知道有哪些工具？** 通过 JSON Schema：
 
-## Extension Guide: 下一步扩展
+```python
+# 你写的 Python 函数:
+@tool(description="读取文件内容，返回带行号的文本")
+def read_file(path: str, limit: int = 200) -> str:
+    """path: 文件的绝对或相对路径
+    limit: 最多读取的行数"""
 
-### 优先级排序
-
+# @tool 自动生成的 JSON Schema (发给 LLM):
+{
+  "type": "function",
+  "function": {
+    "name": "read_file",
+    "description": "读取文件内容，返回带行号的文本",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "文件的绝对或相对路径"},
+        "limit": {"type": "integer", "description": "最多读取的行数"}
+      },
+      "required": ["path"]
+    }
+  }
+}
 ```
-P0 (马上有用):
-├── 上下文压缩 — history 太长时自动 summarize
-├── Streaming 输出 — 不用等 LLM 全部生成完
-└── .env 文件支持 — 不用每次 export
 
-P1 (提升体验):
-├── 交互式确认 — 高危操作前问用户 "确认执行?"
-├── 更好的循环检测 — sliding window 而非精确匹配
-├── 输出目录自动管理 — 按项目名和日期组织
-└── 彩色 Markdown 渲染 — 终端里渲染 Agent 的 MD 输出
+**LLM 看到 Schema，就知道可以调用 `read_file(path="src/main.py")`。** 这就是 OpenAI function-calling 协议的核心。
 
-P2 (接近 Claude Code):
-├── SubAgent — 大任务分解成子任务
-├── MCP 支持 — 接入 MCP Server 获取更多工具
-├── Plugin/Skill 系统 — 可扩展的能力
-├── Prompt Cache — 利用 LLM 前缀缓存降低延迟
-└── 向量记忆 — 语义检索而非全量召回
+#### 6 个内置工具
+
+| 工具 | 行数 | 用途 | Landing 场景 |
+|------|------|------|-------------|
+| `read_file` | 14 | 读文件（带行号、限制行数） | 读代码、读配置 |
+| `list_dir` | 23 | 列目录（树状、深度控制） | 了解项目骨架 |
+| `search_code` | 18 | 搜索模式（优先用 rg） | 找关键类、找调用链 |
+| `run_command` | 13 | 执行 shell 命令 | git log、gh pr list |
+| `write_file` | 7 | 写文件（自动创建目录） | 产出知识地图 |
+| `memorize` | 5 | 记住发现 | 跨会话保持认知 |
+
+**`run_command` 是最强大的工具**——通过它可以调用任何系统 CLI：
+
+```bash
+# Agent 可以这样调用:
+run_command("git log --oneline -20")           # 看最近提交
+run_command("git shortlog -sn")                # 看贡献者
+run_command("gh issue list --state open")      # 看 GitHub Issue
+run_command("glab mr list")                    # 看 GitLab MR
+run_command("wc -l src/**/*.java")             # 统计代码量
 ```
 
-### 扩展示例：添加一个新工具
-
-只需在 `tools.py` 底部加一个函数：
+**添加新工具只需 5 行**：
 
 ```python
 @tool(description="获取 Git 仓库的贡献者统计")
@@ -471,78 +243,352 @@ def git_contributors(path: str = ".") -> str:
     """path: Git 仓库路径"""
     result = subprocess.run(
         ["git", "-C", path, "shortlog", "-sn", "--all"],
-        capture_output=True, text=True, timeout=15
-    )
-    return result.stdout.strip() or "(no contributors found)"
+        capture_output=True, text=True, timeout=15)
+    return result.stdout.strip() or "(no contributors)"
 ```
 
 不需要改任何其他文件——`@tool` 自动注册，Agent 自动发现。
 
----
+### Step 6: 安全检查 (safety.py)
 
-## Learning Resources: 学习资料
+![Safety Layer — 命令黑名单 + 循环检测](docs/images/07-safety-layer.png)
 
-### 理解 Harness 的概念
+每次工具调用前都要过两道检查：
 
-| 资源 | 核心价值 |
-|------|---------|
-| [Harness Engineering (Ryan Lopopolo, OpenAI)](https://openai.com/index/harness-engineering/) | "给 AI 地图，不是说明书" — land 的产出结构直接来自这个思想 |
-| [Building Effective Agents (Anthropic)](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/building-effective-agents) | Agent Loop 的设计模式：Augmented LLM → Workflow → Autonomous |
-| [Context Engineering (Torantulino)](https://www.latent.space/p/context-engineering) | 从 Prompt Engineering 到 Context Engineering 的范式转移 |
-| [Harness Engineering (Martin Fowler)](https://martinfowler.com/articles/building-agents-with-harness.html) | 工程视角的 Harness 设计原则 |
+#### 检查 1: 命令黑名单
 
-### 研究 Claude Code 的 Harness
+```python
+# Agent 想执行 "rm -rf /"
+safety.check_command("rm -rf /")
+# → (False, "Blocked: matches dangerous pattern 'rm\s+-rf'")
+# → 拒绝执行，原因回传给 LLM，LLM 会换一种方式
 
-| 资源 | 核心价值 |
-|------|---------|
-| [Claude Code 官方文档](https://docs.anthropic.com/en/docs/claude-code) | 5 层安全、SubAgent、Skill/Hook、Memory 系统 |
-| [Claude Code Best Practices](https://www.anthropic.com/engineering/claude-code-best-practices) | System Prompt 设计、CLAUDE.md 约定 |
-| [Claude Code 源码分析](https://github.com/anthropics/claude-code) | 从用户视角理解完整 Harness 行为 |
+# 黑名单里有 13 个模式:
+BLOCKED = ["rm -rf", "sudo", "mkfs", "shutdown", "reboot",
+           "git push --force", "git reset --hard", "chmod 777", ...]
+```
 
-### 研究 DeerFlow 的 Harness
+#### 检查 2: 循环检测 (Doom Loop Detection)
 
-| 资源 | 核心价值 |
-|------|---------|
-| [DeerFlow GitHub](https://github.com/bytedance/deer-flow) | 14 阶段中间件、后端轮询、Harness/App 边界 |
-| 重点阅读: `deerflow/agents/lead_agent/middleware/` | 每个中间件对应一个 Agent 特有问题 |
-| 重点阅读: `tests/test_harness_boundary.py` | 用 AST 检测 import 确保边界——和 Capa 的 API/SPI 同构 |
+```python
+# Agent 连续 3 次调用同样的 read_file("config.yaml")
+safety.check_loop("read_file", {"path": "config.yaml"})
+# 第 1 次: (True, "")  — 正常
+# 第 2 次: (True, "")  — 可能是 retry
+# 第 3 次: (False, "Loop detected") — 停！换一种方式
 
-### OpenAI Function Calling 协议
+# 每次用户发新消息时重置计数器
+safety.reset_loop()
+```
 
-| 资源 | 核心价值 |
-|------|---------|
-| [OpenAI Function Calling Guide](https://platform.openai.com/docs/guides/function-calling) | tools.py 的 JSON Schema 格式来源 |
-| [OpenAI API Reference](https://platform.openai.com/docs/api-reference/chat/create) | messages/tool_calls/tool 三种 role 的协议细节 |
+**为什么需要循环检测？** 因为 LLM 有概率会陷入 Doom Loop——一直重复同样的操作。这是 Agent 特有的问题，传统软件没有。
 
-### Agent 协议标准
-
-| 资源 | 核心价值 |
-|------|---------|
-| [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) | Agent ↔ 工具/数据的标准协议 |
-| [A2A (Agent-to-Agent)](https://github.com/google/A2A) | Agent ↔ Agent 协作协议 |
-
----
-
-## Source Map: 代码行数与知识图谱映射
+**对比 Claude Code 的 5 层安全**：
 
 ```
-文件           行数    Harness 子系统         对应概念
-────────────  ────    ─────────────         ─────────
-tools.py      217     Tool Integration      工具注册、Schema 生成、执行
-agent.py      171     Agent Loop            Think → Act → Observe 循环
-cli.py        180     Terminal Interface    交互层、REPL、特殊命令
-prompt.py     135     Context Engineering   System Prompt 分段动态组装
-memory.py      95     Memory & State        JSON 持久化、Token 预算回忆
-safety.py      62     Safety & Guardrails   命令黑名单、循环检测
-llm.py         41     LLM Abstraction       OpenAI 兼容客户端
-────────────  ────
-合计           901
+Claude Code 安全纵深:
+├── Layer 1: AST 静态分析 (代码注入检测)     ← land 没有
+├── Layer 2: Allow/Deny 列表                ← land 的黑名单
+├── Layer 3: Runtime Approval (用户确认)     ← land 没有
+├── Layer 4: Docker 沙箱 (进程隔离)          ← land 没有
+└── Layer 5: Audit Log (操作审计)            ← land 没有
 
-代码量分布揭示 Harness 的本质:
-  工具层最多 (217) — Agent 的价值在于使用工具
-  LLM 层最少 (41)  — 调用 LLM 本身不产生价值
-  其余都是"围绕 LLM 的基础设施"
+land 的 2 层 (黑名单 + 循环) 是最小但最关键的子集。
+扩展方向: 先加 "用户确认"，再加沙箱。
 ```
+
+### Step 7: 记忆持久化 (memory.py)
+
+当 Agent 调用 `memorize("order-service 是核心模块", "list_dir 结果")` 时：
+
+```python
+# agent.py 拦截 memorize 调用:
+if name == "memorize":
+    self.memory.add(fact=args["fact"], source=args["source"])
+
+# memory.py 存入 JSON:
+{
+  "session_id": "2026-03-31-150000",
+  "facts": [
+    {
+      "fact": "order-service 是核心模块",
+      "source": "list_dir 结果",
+      "timestamp": "2026-03-31T15:01:23"
+    }
+  ]
+}
+
+# 下一轮 LLM 调用时，prompt.py 会注入:
+# "## 已知事实
+#  - order-service 是核心模块 (source: list_dir 结果)"
+```
+
+**关键设计: Token 预算**
+
+```python
+def recall(self, token_budget=2000):
+    char_budget = token_budget * 4  # ~4 chars/token 估算
+    for entry in reversed(self._facts):  # 最近的优先
+        if used + len(line) > char_budget:
+            break  # 超预算就停!
+```
+
+**为什么不全部返回？** 因为 LLM 的上下文窗口是有限资源。100 条记忆可能占用 2000 token，挤掉了当前对话的空间。这就是**上下文经济学**——Ryan Lopopolo 说的"上下文是稀缺资源"。
+
+**对比其他 Harness 的记忆系统**：
+
+```
+land:          JSON 列表 + token 预算 → 最简单
+Claude Code:   MEMORY.md 文件 + frontmatter 类型标签 → 结构化
+DeerFlow:      LLM 自动提取事实 + 置信度评分 → 最智能
+Dapr Agents:   Dapr State Store (28+ 可插拔后端) → 最可扩展
+```
+
+### Step 8: 产出知识地图
+
+![Output Structure — 渐进式披露的知识架构](docs/images/08-output-structure.png)
+
+当你说"帮我生成知识地图"，Agent 会按模板创建：
+
+```
+output/order-system/
+├── INDEX.md                ← 入口地图 (~100 行)
+├── architecture.md         ← 分层架构 + 模块关系
+├── modules/
+│   ├── order-service.md   ← 职责、入口文件、依赖
+│   ├── inventory.md
+│   └── dispatch.md
+├── people.md               ← @张三 — order owner
+├── risks.md                ← 分布式锁竞争问题
+├── glossary.md             ← "履约" = fulfillment
+└── onboarding-checklist.md ← [ ] 跑通本地环境
+```
+
+**INDEX.md 的核心原则** (来自 Ryan Lopopolo, OpenAI):
+
+> "给人地图，不是说明书。~100 行入口 + 指针 + 渐进发现。"
+
+```markdown
+# Order System — 知识地图
+> 生成时间: 2026-03-31 | 来源: git repo
+
+## 一句话
+订单履约系统，从下单到配送完成。日均 500 万单。
+
+## 核心模块 (详见 modules/)
+- [order-service](modules/order-service.md) — 订单生命周期 ★最复杂
+- [inventory](modules/inventory.md) — 库存扣减与回补
+
+## 关键人 (详见 people.md)
+- @张三 — order-service owner
+
+## 需要注意 (详见 risks.md)
+- ⚠️ 分布式锁竞争问题
+```
+
+**每条都是指针，不内联详情。** 这和 AGENTS.md / CLAUDE.md 的设计原则完全一致——map, not manual.
+
+---
+
+## Part 3: 和 Claude Code / DeerFlow 对比学习
+
+![Learning Path — 从 land 到 DeerFlow 到 Claude Code](docs/images/09-learning-path.png)
+
+### 全景对比
+
+```
+                        land            Claude Code         DeerFlow 2.0
+                        ────            ───────────         ────────────
+代码量                   902 行          ~50K+ 行            ~30K+ 行
+定位                    学习用 Harness   终端 Agent Harness   SuperAgent Harness
+─────────────────────────────────────────────────────────────────────────
+Agent Loop              ✅ 15 轮         ✅ 复杂嵌套          ✅ LangGraph 状态机
+工具系统                 6 个            ~20 个              ~15 个 (5 来源)
+上下文工程               ✅ 分段组装      ✅ System Reminder   ✅ 14 阶段中间件
+记忆                    ✅ JSON 文件     ✅ MEMORY.md         ✅ 置信度事实系统
+安全                    ✅ 2 层          ✅ 5 层纵深          ✅ Guardrail 中间件
+─────────────────────────────────────────────────────────────────────────
+沙箱                    ❌              ✅ 进程隔离           ✅ Docker
+Sub-Agent               ❌              ✅ Agent Teams       ✅ 双线程池
+MCP                     ❌              ✅ 原生              ✅ OAuth
+Streaming               ❌              ✅                   ✅
+Skill/Plugin            ❌              ✅ /commit等         ✅ 渐进加载
+上下文压缩              ❌              ✅ Compact           ✅ Summarization
+```
+
+### 每个模块的进化方向
+
+#### Agent Loop 进化
+
+```
+land (你现在在这里):
+  简单 for 循环，最多 15 轮
+  ↓
+DeerFlow:
+  LangGraph 状态机，支持分支和并行
+  + 14 阶段中间件管道 (每个中间件处理一个 Agent 特有问题)
+  ↓
+Claude Code:
+  嵌套 Agent Loop (SubAgent 可再产生 SubAgent)
+  + 上下文自动压缩 (Compact)
+  + Hooks (PreToolUse / PostToolUse 生命周期事件)
+```
+
+#### 工具系统进化
+
+```
+land:
+  @tool 装饰器 + 6 个内置工具
+  ↓
+DeerFlow:
+  5 来源动态组装 (内置 + Skill + MCP + SubAgent + 用户自定义)
+  + Skill 渐进加载 (不一次性加载所有工具，按需发现)
+  ↓
+Claude Code:
+  ~20 个内置工具 + MCP 延迟加载 (ToolSearch 按需发现)
+  + Agent 工具 (一个工具可以启动一个新 Agent)
+  + 权限控制 (Ask/Allow/Deny per tool)
+```
+
+#### 记忆系统进化
+
+```
+land:
+  JSON 文件 + token 预算
+  ↓
+DeerFlow:
+  LLM 自动提取事实 + 置信度评分 + 语义检索
+  ↓
+Claude Code:
+  MEMORY.md 文件系统 + 类型标签 (user/feedback/project/reference)
+  + 自动检测过时记忆
+  + 引用前验证 (记忆说文件存在 → grep 确认)
+```
+
+#### 安全系统进化
+
+```
+land:
+  命令黑名单 + 循环检测 (62 行)
+  ↓
+DeerFlow:
+  + Guardrail 中间件 (基于 LLM 的内容审查)
+  + DanglingToolCall 处理 (LLM 输出格式错误)
+  ↓
+Claude Code:
+  5 层纵深防御:
+  ├── AST 静态分析 (检测代码注入)
+  ├── Allow/Deny 列表 (工具级权限)
+  ├── Runtime Approval (用户交互确认)
+  ├── Docker/Worktree 沙箱 (进程隔离)
+  └── Audit Log (操作审计)
+```
+
+---
+
+## Part 4: 动手扩展
+
+### 扩展优先级
+
+```
+P0 (马上有用):
+├── .env 文件支持 — 不用每次 export
+├── Streaming 输出 — 不用等 LLM 全部生成完
+└── 上下文压缩 — history 太长时自动 summarize
+
+P1 (提升体验):
+├── 交互式确认 — 高危操作前问用户 "确认执行?"
+├── 更好的循环检测 — sliding window 而非精确匹配
+└── 彩色 Markdown 渲染 — 终端里渲染 Agent 的 MD 输出
+
+P2 (接近 Claude Code):
+├── SubAgent — 大任务分解成子任务
+├── MCP 支持 — 接入 MCP Server 获取更多工具
+├── Plugin/Skill — 可扩展的能力
+└── 向量记忆 — 语义检索而非全量召回
+```
+
+### 示例: 添加 .env 支持 (P0)
+
+```python
+# 在 cli.py 的 main() 开头加:
+from pathlib import Path
+
+env_file = Path(".env")
+if env_file.exists():
+    for line in env_file.read_text().splitlines():
+        if "=" in line and not line.startswith("#"):
+            key, val = line.split("=", 1)
+            os.environ.setdefault(key.strip(), val.strip())
+```
+
+### 示例: 添加用户确认 (P1)
+
+```python
+# 在 agent.py 的 safety check 后加:
+CONFIRM_PATTERNS = [re.compile(r"\bgit\s+push\b"), re.compile(r"\bwrite_file\b")]
+
+for pattern in CONFIRM_PATTERNS:
+    if pattern.search(str(args)):
+        answer = input(f"  ⚠️  Confirm {name}({args})? [y/N] ")
+        if answer.lower() != "y":
+            result = "[CANCELLED] User denied"
+            break
+```
+
+---
+
+## Part 5: 源码导读 — 推荐阅读顺序
+
+```
+阅读顺序     文件           行数    你会学到什么
+─────────   ────────────  ────    ──────────────────────────
+1 (最简单)   llm.py         41    OpenAI 兼容协议、模型抽象
+2 (核心模式) tools.py       217    @tool 装饰器、JSON Schema、6 个工具实现
+3 (安全思维) safety.py       62    命令黑名单、循环检测、Agent 特有风险
+4 (持久化)   memory.py       95    JSON 存储、Token 预算、上下文经济学
+5 (上下文)   prompt.py      135    分段组装、动态注入、Harness Engineering
+6 (心脏)     agent.py       171    Agent Loop、tool_call 协议、消息格式
+7 (入口)     cli.py         180    REPL、特殊命令、用户体验
+
+代码量分布:
+  工具层最多 (217行) — Agent 的价值在于使用工具
+  LLM 层最少 (41行)  — 调用 LLM 本身不产生价值
+  其余都是 "围绕 LLM 的基础设施" — 这就是 Harness
+```
+
+**阅读每个文件时，问自己三个问题**：
+1. 这个模块解决了什么 Agent 特有的问题？
+2. Claude Code / DeerFlow 在同一个问题上做了什么更复杂的设计？
+3. 如果我要扩展这个模块，下一步加什么？
+
+---
+
+## Part 6: 学习资料
+
+### 核心概念
+
+| 资源 | 读完你会理解 |
+|------|-------------|
+| [Harness Engineering (Ryan Lopopolo, OpenAI)](https://openai.com/index/harness-engineering/) | 为什么 land 的产出是"地图不是说明书" |
+| [Building Effective Agents (Anthropic)](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/building-effective-agents) | 为什么 agent.py 是 Think→Act→Observe 循环 |
+| [Context Engineering (Torantulino)](https://www.latent.space/p/context-engineering) | 为什么 prompt.py 每次动态组装而非写死 |
+| [Harness Engineering (Martin Fowler)](https://martinfowler.com/articles/building-agents-with-harness.html) | 工程视角的 Harness 六大子系统 |
+
+### 参考实现
+
+| 项目 | 读完你会理解 |
+|------|-------------|
+| [Claude Code 官方文档](https://docs.anthropic.com/en/docs/claude-code) | land 的每个模块在完整 Harness 里长什么样 |
+| [DeerFlow GitHub](https://github.com/bytedance/deer-flow) | 14 阶段中间件怎么解决 Agent 特有问题 |
+| [OpenAI Function Calling](https://platform.openai.com/docs/guides/function-calling) | tools.py 的 JSON Schema 格式为什么这么写 |
+
+### 协议标准
+
+| 协议 | 和 land 的关系 |
+|------|---------------|
+| [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) | land 未来接入更多工具的标准方式 |
+| [A2A (Agent-to-Agent)](https://github.com/google/A2A) | land 未来和其他 Agent 协作的标准方式 |
 
 ---
 
