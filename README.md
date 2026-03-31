@@ -66,6 +66,8 @@ land --session 2026-03-31-143022
 
 ### 和 Claude Code / DeerFlow 的对比
 
+![Comparison](docs/images/05-comparison.png)
+
 ```
                         land        Claude Code     DeerFlow 2.0
                         ────        ───────────     ────────────
@@ -87,6 +89,10 @@ land 是学习 Harness 的起点：
 ---
 
 ## Architecture: 六个模块
+
+![Architecture](docs/images/01-architecture.png)
+
+Agent Loop 围绕 6 个模块运转——LLM、Tools、Memory、Safety、Prompt、Terminal UI。
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -127,6 +133,10 @@ land 是学习 Harness 的起点：
 ```
 
 ### 数据流（一次完整的交互）
+
+![Data Flow](docs/images/04-data-flow.png)
+
+用户输入 → Prompt 组装 → LLM 思考 → Tool Calls? → 安全检查 → 执行 → 结果回传 → 循环。
 
 ```
 1. 用户输入: "帮我分析这个项目的架构"
@@ -320,7 +330,9 @@ land 的记忆够用但原始。下一步可以加:
 
 ### 5. prompt.py — System Prompt 动态组装 (135 行)
 
-**这是 Harness 区别于"给 LLM 发消息"的关键。**
+![Context Engineering](docs/images/03-context-engineering.png)
+
+**这是 Harness 区别于"给 LLM 发消息"的关键。** 6 个段像积木一样堆叠，每次调用动态组装。
 
 ```python
 def build_system_prompt(memory_recall="", project_path=""):
@@ -354,7 +366,9 @@ def build_system_prompt(memory_recall="", project_path=""):
 
 ### 6. agent.py — Agent Loop (171 行)
 
-**这是 Harness 的心脏。** 整个文件实现一个循环：
+![Agent Loop](docs/images/02-agent-loop.png)
+
+**这是 Harness 的心脏。** Think → Act → Observe 三阶段循环：
 
 ```
 for iteration in range(15):        # 最多 15 轮
