@@ -1,15 +1,21 @@
 """System Prompt Builder — dynamic assembly following Harness Engineering principles."""
 
 
-def build_system_prompt(memory_recall: str = "", project_path: str = "") -> str:
+def build_system_prompt(
+    memory_recall: str = "",
+    project_path: str = "",
+    project_rules: str = "",
+) -> str:
     """Assemble the full system prompt from sections.
 
     Sections:
         1. Role identity
         2. CLI tools available
         3. Output structure template (Harness Engineering)
-        4. Memory (injected recalled facts)
-        5. Constraints
+        4. Project rules (from LAND.md)
+        5. Memory (injected recalled facts)
+        6. Project context
+        7. Constraints
     """
     sections: list[str] = []
 
@@ -22,15 +28,19 @@ def build_system_prompt(memory_recall: str = "", project_path: str = "") -> str:
     # --- 3. Output structure ---
     sections.append(OUTPUT_STRUCTURE_SECTION)
 
-    # --- 4. Memory ---
+    # --- 4. Project rules (from LAND.md) ---
+    if project_rules:
+        sections.append(project_rules)
+
+    # --- 5. Memory ---
     if memory_recall:
         sections.append(memory_recall)
 
-    # --- 5. Project context ---
+    # --- 6. Project context ---
     if project_path:
         sections.append(f"## 当前项目\n工作目录: {project_path}")
 
-    # --- 6. Constraints ---
+    # --- 7. Constraints ---
     sections.append(CONSTRAINTS_SECTION)
 
     return "\n\n".join(sections)

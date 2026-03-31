@@ -390,6 +390,217 @@ output/order-system/
 
 ---
 
+## Part 2.5: 进阶模块 — 从 Claude Code 学到的 4 个子系统
+
+v0.1 有 6 个模块 (902 行)。参考 Claude Code，v0.2 新增了 4 个模块 (+567 行)，覆盖了 Harness 的"第二层能力"。
+
+### Module 7: compact.py — 上下文压缩 (119 行)
+
+![Context Compact — 渐进式压缩策略](docs/images/11-context-compact.png)
+
+**问题**：对话越长，token 消耗越多。LLM 上下文窗口是有限资源。如果不压缩，Agent 在长任务中会"撑爆"窗口，丢失关键上下文。
+
+**Claude Code 的做法**：当 token 用量接近上限时，自动触发 Compact——先截断旧工具输出，再摘要旧对话，最后卸载到记忆文件。
+
+**land 的实现**：
+
+```python
+class ContextCompactor:
+    def compact_if_needed(self, messages):
+        usage = self.estimate_tokens(messages) / self.budget
+
+        if usage < 0.70:  return messages          # 正常
+        if usage >= 0.70: self._truncate_outputs()  # 截断工具输出
+        if usage >= 0.85: self._summarize_old()     # 摘要旧对话
+```
+
+**三阶段压缩**：
+
+| 阶段 | 触发条件 | 做什么 | 效果 |
+|------|---------|--------|------|
+| Stage 1 | > 70% 窗口 | 截断超过 50 行的工具输出 | 减少 ~30% |
+| Stage 2 | > 85% 窗口 | 旧对话替换为 1-2 行摘要，保留最近 10 条 | 减少 ~60% |
+| Stage 3 | (future) | 卸载事实到 memory.json | 减少 ~80% |
+
+**学习要点**：Claude Code 还有 Prompt Cache——静态部分（System Prompt、Tool Schema）被 LLM 缓存为前缀，只有动态部分（对话历史）需要每次重传。这使得压缩的紧迫性降低 ~40%。
+
+---
+
+### Module 8: hooks.py — 生命周期钩子 (129 行)
+
+![Hooks System — Agent 生命周期的 5 个拦截点](docs/images/12-hooks-system.png)
+
+**问题**：Agent 有真实工具（读文件、写文件、执行命令）——一个错误可能删除文件或推送坏代码。仅靠 System Prompt 约束不够——LLM 在长对话中可能"遗忘"规则。需要在**代码层面**拦截。
+
+**Claude Code 的做法**：在 Agent 执行的关键节点注册 Hook，任何操作都要过 Hook 链。这是第 5 层安全防线。
+
+**land 的实现**：
+
+```python
+hooks = HookRegistry()
+
+# 用装饰器注册 Hook
+@hooks.pre_tool_use
+def block_env_writes(tool_name, args):
+    """阻止写入 .env 文件"""
+    if tool_name == "write_file" and ".env" in args.get("path", ""):
+        return {"allowed": False, "reason": "Cannot write to .env files"}
+    return {"allowed": True}
+
+@hooks.post_tool_use
+def audit_log(tool_name, args, result):
+    """记录每一次工具调用"""
+    logger.info(f"{tool_name}({args}) → {result[:80]}")
+```
+
+**5 个 Hook 事件**：
+
+| Hook | 时机 | 能做什么 |
+|------|------|---------|
+| `pre_tool_use` | 工具执行**前** | 拦截、修改参数、审计 |
+| `post_tool_use` | 工具执行**后** | 检查结果、记录日志 |
+| `session_start` | 会话开始 | 初始化、加载配置 |
+| `session_end` | 会话结束 | 保存状态、清理 |
+| `on_error` | 发生错误 | 错误处理、告警 |
+
+**学习要点**：Hooks 和传统软件的 Middleware/Interceptor 是同一个模式——你在 Dapr 中见过的 Middleware Pipeline，在 Harness 里以 Hook 形态出现。DeerFlow 的 14 阶段中间件本质上就是一系列 Hook。
+
+---
+
+### Module 9: permissions.py — 权限系统 (140 行)
+
+![Permission System — Allow / Ask / Deny 三级授权](docs/images/13-permission-system.png)
+
+**问题**：不能全拦（Agent 没法工作），不能全放（Agent 可能搞坏东西）。需要**分级授权**。
+
+**Claude Code 的做法**：三级权限 + 模式匹配。同一个工具在不同上下文可以有不同权限。
+
+**land 的实现**：
+
+```python
+checker = PermissionChecker(mode="semi-auto")
+
+# 读操作 → 自动放行
+checker.check("read_file", {"path": "a.py"})      # → ALLOW
+
+# 危险操作 → 永远拒绝
+checker.check("run_command", {"command": "rm -rf /"})  # → DENY
+
+# 写操作 → 询问用户
+checker.check("write_file", {"path": "out.md"})    # → ASK
+#   ⚠ Approve?  write_file(path=out.md)
+#   [y/N]: _
+```
+
+**三种权限 + 三种模式**：
+
+```
+权限:
+  ALLOW — 自动放行 (read_file, list_dir, search_code, git log...)
+  ASK   — 需要用户确认 (write_file, git push, git commit...)
+  DENY  — 永远拒绝 (rm -rf, sudo, force push...)
+
+模式:
+  auto      — 全部放行 (速度最快，最不安全)
+  semi-auto — 用规则判断 (默认模式，平衡)
+  manual    — 全部询问 (最安全，最慢)
+```
+
+**判断顺序**：DENY > ALLOW > ASK > 默认。这意味着 DENY 规则始终优先——即使有 ALLOW 规则匹配，DENY 也能覆盖它。
+
+**学习要点**：Claude Code 的权限是**模式匹配**的，不是简单的工具名级别。`Bash(npm test)` 可以 ALLOW，但 `Bash(rm -rf)` 要 DENY——同是 Bash 工具，不同参数不同权限。land 的实现用 `tool_name:glob_pattern` 达到同样效果。
+
+---
+
+### Module 10: config.py — 项目配置 (108 行)
+
+![Config System — LAND.md + settings.json 双层配置](docs/images/14-config-system.png)
+
+**问题**：不同项目有不同规则。"不要修改 config/ 目录"、"测试覆盖率必须 > 80%"、"@张三负责 order-service"——这些项目特定的信息应该持久化，不是每次口头告诉 Agent。
+
+**Claude Code 的做法**：`CLAUDE.md`（人类写、Markdown、自由格式）+ `settings.json`（机器读、JSON、结构化）。
+
+**land 的实现**：
+
+```bash
+# 在项目根目录创建 LAND.md
+land --init
+
+# LAND.md 内容会自动注入到 System Prompt
+cat LAND.md
+```
+
+```markdown
+# Project Rules for land
+
+## Coding Standards
+- 语言: Java 17 + Spring Boot 3.2
+- 测试: JUnit 5, 覆盖率 > 80%
+
+## Architecture
+- 微服务架构，order/inventory/dispatch 三个核心服务
+- 消息中间件: Kafka
+
+## Rules
+- 不要修改 config/ 目录下的文件
+- 不要直接查看 .env 文件
+
+## Team Context
+- @张三 负责 order-service
+- @李四 负责基础设施和部署
+```
+
+**双层设计**：
+
+| 层 | 文件 | 给谁看 | 内容 |
+|----|------|--------|------|
+| **Human** | `LAND.md` | 人 + Agent | 项目规则、架构、团队（Markdown） |
+| **Machine** | `.land/settings.json` | Harness | max_iterations、permission_mode（JSON） |
+
+**学习要点**：LAND.md = 你在 Claude Code 里见到的 CLAUDE.md。核心思想是"仓库即真相"（Ryan Lopopolo）——如果规则不在仓库里，对 Agent 就不存在。Slack 里的讨论、脑子里的知识，Agent 都看不到。
+
+---
+
+### Agent Loop v0.2: 5 层安全防线
+
+新的 `agent.py` 现在集成了全部安全层：
+
+```python
+for tc in tool_calls:
+    # Layer 2: 命令黑名单 (safety.py)
+    if is_blocked(tc): continue
+
+    # Layer 3: 权限检查 (permissions.py) — Allow/Ask/Deny
+    if is_denied(tc): continue
+    if needs_ask(tc) and user_says_no(): continue
+
+    # Layer 4: 循环检测 (safety.py)
+    if is_loop(tc): continue
+
+    # Layer 5: 生命周期钩子 (hooks.py) — PreToolUse
+    if hook_blocks(tc): continue
+
+    # ✅ 全部通过 → 执行
+    result = tools.execute(tc)
+
+    # PostToolUse hook — 审计
+    hooks.fire_post_tool_use(tc, result)
+```
+
+对比 Claude Code 的 5 层：
+
+```
+           Claude Code              land v0.2
+Layer 1:   System Prompt 约束       ✅ prompt.py
+Layer 2:   命令黑名单               ✅ safety.py
+Layer 3:   Allow/Ask/Deny 权限      ✅ permissions.py (NEW)
+Layer 4:   循环检测                  ✅ safety.py
+Layer 5:   Hooks 拦截               ✅ hooks.py (NEW)
+Bonus:     Docker/Worktree 沙箱     ❌ (P2 扩展)
+```
+
+---
+
 ## Part 3: 和 Claude Code / DeerFlow 对比学习
 
 ![Learning Path — 从 land 到 DeerFlow 到 Claude Code](docs/images/09-learning-path.png)
@@ -397,23 +608,26 @@ output/order-system/
 ### 全景对比
 
 ```
-                        land            Claude Code         DeerFlow 2.0
-                        ────            ───────────         ────────────
-代码量                   902 行          ~50K+ 行            ~30K+ 行
+                        land v0.2       Claude Code         DeerFlow 2.0
+                        ─────────       ───────────         ────────────
+代码量                   1469 行         ~50K+ 行            ~30K+ 行
 定位                    学习用 Harness   终端 Agent Harness   SuperAgent Harness
 ─────────────────────────────────────────────────────────────────────────
-Agent Loop              ✅ 15 轮         ✅ 复杂嵌套          ✅ LangGraph 状态机
+Agent Loop              ✅ 可配置轮数    ✅ 复杂嵌套          ✅ LangGraph 状态机
 工具系统                 6 个            ~20 个              ~15 个 (5 来源)
 上下文工程               ✅ 分段组装      ✅ System Reminder   ✅ 14 阶段中间件
 记忆                    ✅ JSON 文件     ✅ MEMORY.md         ✅ 置信度事实系统
-安全                    ✅ 2 层          ✅ 5 层纵深          ✅ Guardrail 中间件
+安全                    ✅ 5 层 ★NEW    ✅ 5 层纵深          ✅ Guardrail 中间件
+上下文压缩              ✅ 2 阶段 ★NEW  ✅ Compact           ✅ Summarization
+Hooks                   ✅ 5 事件 ★NEW  ✅ 生命周期          ✅ 中间件管道
+权限系统                ✅ A/A/D ★NEW   ✅ Allow/Ask/Deny    ✅ Guardrail
+项目配置                ✅ LAND.md ★NEW ✅ CLAUDE.md         ✅ 配置文件
 ─────────────────────────────────────────────────────────────────────────
 沙箱                    ❌              ✅ 进程隔离           ✅ Docker
 Sub-Agent               ❌              ✅ Agent Teams       ✅ 双线程池
 MCP                     ❌              ✅ 原生              ✅ OAuth
 Streaming               ❌              ✅                   ✅
 Skill/Plugin            ❌              ✅ /commit等         ✅ 渐进加载
-上下文压缩              ❌              ✅ Compact           ✅ Summarization
 ```
 
 ### 每个模块的进化方向
@@ -541,20 +755,32 @@ for pattern in CONFIRM_PATTERNS:
 ## Part 5: 源码导读 — 推荐阅读顺序
 
 ```
-阅读顺序     文件           行数    你会学到什么
-─────────   ────────────  ────    ──────────────────────────
-1 (最简单)   llm.py         41    OpenAI 兼容协议、模型抽象
-2 (核心模式) tools.py       217    @tool 装饰器、JSON Schema、6 个工具实现
-3 (安全思维) safety.py       62    命令黑名单、循环检测、Agent 特有风险
-4 (持久化)   memory.py       95    JSON 存储、Token 预算、上下文经济学
-5 (上下文)   prompt.py      135    分段组装、动态注入、Harness Engineering
-6 (心脏)     agent.py       171    Agent Loop、tool_call 协议、消息格式
-7 (入口)     cli.py         180    REPL、特殊命令、用户体验
+第一轮: 基础 6 模块 (v0.1 骨架)
+─────────────────────────────────────────────────────
+阅读顺序     文件             行数    你会学到什么
+─────────   ──────────────  ────    ──────────────────────────
+1 (最简单)   llm.py           41    OpenAI 兼容协议、模型抽象
+2 (核心模式) tools.py         217    @tool 装饰器、JSON Schema、6 个工具
+3 (安全基础) safety.py         62    命令黑名单、循环检测
+4 (持久化)   memory.py         95    JSON 存储、Token 预算
+5 (上下文)   prompt.py        145    分段组装、动态注入
+6 (心脏)     agent.py         215    Agent Loop、5 层安全集成
+7 (入口)     cli.py           187    REPL、特殊命令
 
-代码量分布:
+第二轮: 进阶 4 模块 (v0.2 参考 Claude Code)
+─────────────────────────────────────────────────────
+8 (压缩)     compact.py       119    上下文窗口管理、渐进压缩
+9 (钩子)     hooks.py         129    生命周期事件、拦截器模式
+10 (权限)    permissions.py   140    Allow/Ask/Deny、模式匹配
+11 (配置)    config.py        108    LAND.md、双层配置
+
+合计: 1469 行, 10 个模块
+
+代码量分布揭示 Harness 的本质:
   工具层最多 (217行) — Agent 的价值在于使用工具
+  Agent Loop (215行) — 集成了所有安全层后，逻辑更完整
   LLM 层最少 (41行)  — 调用 LLM 本身不产生价值
-  其余都是 "围绕 LLM 的基础设施" — 这就是 Harness
+  新增 4 模块 (496行) — 安全+配置 占比 34%，说明 Harness 的大量代码是"护栏"
 ```
 
 **阅读每个文件时，问自己三个问题**：

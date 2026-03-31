@@ -1,17 +1,22 @@
-"""Agent Loop — the core think → act → observe cycle."""
+"""Agent Loop — the core think → act → observe cycle.
+
+v0.2: Integrated with Compact, Hooks, Permissions, and Config systems.
+"""
 
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 from harness.llm import LLMClient
 from harness.tools import ToolRegistry
 from harness.memory import MemoryStore
 from harness.safety import SafetyGuard
 from harness.prompt import build_system_prompt
-
-MAX_ITERATIONS = 15
+from harness.compact import ContextCompactor
+from harness.hooks import HookRegistry, hooks as default_hooks
+from harness.permissions import PermissionChecker, Decision
+from harness.config import ConfigManager
 
 
 # ---------------------------------------------------------------------------
@@ -40,26 +45,35 @@ class Agent:
         memory: MemoryStore,
         safety: SafetyGuard,
         project_path: str = "",
+        config: Optional[ConfigManager] = None,
+        permissions: Optional[PermissionChecker] = None,
+        compactor: Optional[ContextCompactor] = None,
+        hook_registry: Optional[HookRegistry] = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
         self.memory = memory
         self.safety = safety
         self.project_path = project_path
+        self.config = config or ConfigManager(project_path or ".")
+        self.permissions = permissions or PermissionChecker(mode=self.config.get("permission_mode", "semi-auto"))
+        self.compactor = compactor or ContextCompactor(self.config.get("context_window", 120000))
+        self.hooks = hook_registry or default_hooks
+        self.max_iterations = self.config.get("max_iterations", 15)
         self.history: list[dict[str, Any]] = []
 
     def _system_message(self) -> dict[str, str]:
         prompt = build_system_prompt(
             memory_recall=self.memory.recall(),
             project_path=self.project_path,
+            project_rules=self.config.inject_into_prompt(),
         )
         return {"role": "system", "content": prompt}
 
     def run(self, user_message: str) -> str:
         """Execute one turn of the agent loop.
 
-        Takes a user message, runs the think→act→observe cycle,
-        and returns the final text response.
+        Flow: Think → [Safety → Permissions → Hooks → Act → Hooks] → Observe → Loop
         """
         self.safety.reset_loop()
         self.history.append({"role": "user", "content": user_message})
@@ -67,9 +81,14 @@ class Agent:
         # Build messages: system + history
         messages: list[dict[str, Any]] = [self._system_message()] + self.history
 
+        # --- Context Compact: compress if history is too long ---
+        messages, was_compacted = self.compactor.compact_if_needed(messages)
+        if was_compacted:
+            _print_system("Context compressed to fit window")
+
         tool_schemas = self.tools.get_schemas()
 
-        for iteration in range(MAX_ITERATIONS):
+        for iteration in range(self.max_iterations):
             # --- Think: call LLM ---
             response = self.llm.chat(messages, tools=tool_schemas if tool_schemas else None)
 
@@ -80,7 +99,6 @@ class Agent:
                 return content
 
             # --- Case 2: tool calls ---
-            # Append the assistant message with tool_calls
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
                 "content": response.content or "",
@@ -105,7 +123,7 @@ class Agent:
                 except json.JSONDecodeError:
                     args = {}
 
-                # --- Safety check: commands ---
+                # --- Layer 2: Safety blacklist ---
                 if name == "run_command" and "command" in args:
                     allowed, reason = self.safety.check_command(args["command"])
                     if not allowed:
@@ -114,7 +132,21 @@ class Agent:
                         messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
                         continue
 
-                # --- Safety check: loop detection ---
+                # --- Layer 3: Permission check (Allow/Ask/Deny) ---
+                decision, reason = self.permissions.check(name, args)
+                if decision == Decision.DENY:
+                    result = f"[DENIED] {reason}"
+                    _print_tool_blocked(name, args, reason)
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                    continue
+                if decision == Decision.ASK:
+                    if not PermissionChecker.prompt_user(name, args):
+                        result = "[CANCELLED] User denied"
+                        _print_tool_blocked(name, args, "User denied")
+                        messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                        continue
+
+                # --- Layer 4: Loop detection ---
                 allowed, reason = self.safety.check_loop(name, args)
                 if not allowed:
                     result = f"[LOOP] {reason}"
@@ -122,20 +154,28 @@ class Agent:
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
                     continue
 
+                # --- Layer 5: Pre-tool hooks ---
+                hook_result = self.hooks.fire_pre_tool_use(name, args)
+                if not hook_result.get("allowed", True):
+                    result = f"[HOOK] {hook_result.get('reason', 'Blocked by hook')}"
+                    _print_tool_blocked(name, args, hook_result.get("reason", ""))
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                    continue
+                args = hook_result.get("args", args)
+
                 # --- Execute tool ---
                 _print_tool_call(name, args)
 
-                # Special handling: memorize goes to MemoryStore
                 if name == "memorize":
-                    self.memory.add(
-                        fact=args.get("fact", ""),
-                        source=args.get("source", ""),
-                    )
+                    self.memory.add(fact=args.get("fact", ""), source=args.get("source", ""))
                     result = f"Memorized: {args.get('fact', '')}"
                 else:
                     result = self.tools.execute(name, args)
 
                 _print_tool_result(result)
+
+                # --- Post-tool hooks ---
+                self.hooks.fire_post_tool_use(name, args, result)
 
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
@@ -165,6 +205,10 @@ def _print_tool_result(result: str) -> None:
 
 def _print_tool_blocked(name: str, args: dict, reason: str) -> None:
     print(f"  {_C.RED}✗ {name} — {reason}{_C.RESET}")
+
+
+def _print_system(msg: str) -> None:
+    print(f"  {_C.YELLOW}⟳ {msg}{_C.RESET}")
 
 
 def _truncate(s: str, max_len: int) -> str:
