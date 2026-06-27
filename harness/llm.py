@@ -1,4 +1,4 @@
-"""LLM Client — wraps OpenAI-compatible API for GLM (ZhipuAI)."""
+"""LLM Client — wraps Volcengine Ark's OpenAI-compatible API."""
 
 from __future__ import annotations
 
@@ -10,12 +10,18 @@ from openai import OpenAI
 
 class LLMClient:
     def __init__(self) -> None:
-        api_key = os.environ.get("GLM_API_KEY", "")
-        base_url = os.environ.get("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
-        self.model = os.environ.get("GLM_MODEL", "glm-4-flash")
+        api_key = os.environ.get("ARK_API_KEY", "")
+        base_url = os.environ.get(
+            "ARK_BASE_URL",
+            "https://ark.cn-beijing.volces.com/api/coding/v3",
+        )
+        self.model = os.environ.get(
+            "ARK_CHAT_MODEL",
+            "doubao-seed-2-0-code-preview-260215",
+        )
 
         if not api_key:
-            raise ValueError("GLM_API_KEY environment variable is required")
+            raise ValueError("ARK_API_KEY environment variable is required")
 
         self.client = OpenAI(api_key=api_key, base_url=base_url)
 

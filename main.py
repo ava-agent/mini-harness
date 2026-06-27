@@ -122,7 +122,7 @@ def main() -> None:
         llm = LLMClient()
     except ValueError as e:
         print(f"{_C.RED}Error: {e}{_C.RESET}")
-        print(f"{_C.GRAY}Set GLM_API_KEY environment variable. See: .env.example{_C.RESET}")
+        print(f"{_C.GRAY}Set ARK_API_KEY environment variable. See: .env.example{_C.RESET}")
         sys.exit(1)
 
     memory = MemoryStore(session_id=args.session)

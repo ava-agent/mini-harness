@@ -17,7 +17,7 @@ from typing import Any
 CHARS_PER_TOKEN = 4
 
 # Thresholds (in tokens)
-DEFAULT_WINDOW = 120000     # GLM-4-flash context window
+DEFAULT_WINDOW = 120000     # Default Ark model context budget
 RESERVED_TOKENS = 8000      # Reserved for system prompt + tools schema
 TRUNCATE_THRESHOLD = 0.70   # Start truncating tool outputs at 70%
 SUMMARIZE_THRESHOLD = 0.85  # Start summarizing old messages at 85%

@@ -15,7 +15,9 @@ git clone https://github.com/ava-agent/mini-harness.git
 cd mini-harness
 pip install -e .
 
-export GLM_API_KEY=your-api-key
+export ARK_API_KEY=your-ark-api-key
+export ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3
+export ARK_CHAT_MODEL=doubao-seed-2-0-code-preview-260215
 
 cd /path/to/your/repo
 land                              # 交互模式
@@ -78,7 +80,7 @@ Session: 2026-03-31-150000
 ```
 
 启动时做了什么：
-1. 初始化 `LLMClient`（连接 GLM API）
+1. 初始化 `LLMClient`（连接 Volcengine Ark API）
 2. 加载 `ToolRegistry`（注册 6 个内置工具）
 3. 创建 `MemoryStore`（新 session 或恢复旧 session）
 4. 创建 `SafetyGuard`（加载黑名单规则）
@@ -707,13 +709,13 @@ Est. tokens: 15,200
 Tool time: 1,847ms
 
   15:00:01 💬 User: 帮我分析这个项目
-  15:00:02 🧠 LLM (glm-4-flash) msgs=3 tokens≈2400
+  15:00:02 🧠 LLM (doubao-seed-2-0-code-preview-260215) msgs=3 tokens≈2400
   15:00:03 ⚙️ list_dir → 1200 chars (23ms)
   15:00:04 ⚙️ read_file → 3400 chars (12ms)
-  15:00:05 🧠 LLM (glm-4-flash) msgs=7 tokens≈4800
+  15:00:05 🧠 LLM (doubao-seed-2-0-code-preview-260215) msgs=7 tokens≈4800
   15:00:06 ⚙️ run_command → 800 chars (156ms)
   15:00:07 🚫 BLOCKED run_command: sudo apt install...
-  15:00:08 🧠 LLM (glm-4-flash) msgs=10 tokens≈6200
+  15:00:08 🧠 LLM (doubao-seed-2-0-code-preview-260215) msgs=10 tokens≈6200
   15:00:10 💡 Agent: 这个项目是一个订单履约系统...
 ```
 
