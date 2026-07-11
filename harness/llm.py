@@ -13,7 +13,7 @@ class LLMClient:
         api_key = os.environ.get("ARK_API_KEY", "")
         base_url = os.environ.get(
             "ARK_BASE_URL",
-            "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "https://ark.cn-beijing.volces.com/api/plan/v3",
         )
         self.model = os.environ.get(
             "ARK_CHAT_MODEL",

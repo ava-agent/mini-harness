@@ -16,7 +16,7 @@ cd mini-harness
 pip install -e .
 
 export ARK_API_KEY=your-ark-api-key
-export ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3
+export ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/plan/v3
 export ARK_CHAT_MODEL=doubao-seed-2-0-code-preview-260215
 
 cd /path/to/your/repo
